@@ -26,8 +26,8 @@ type Pipe struct {
 	r, w     *os.File
 	rrc, wrc syscall.RawConn
 
-	teerd    io.Reader
-	teepipes []*Pipe
+	teerd   io.Reader
+	teepipe *Pipe
 }
 
 // NewPipe creates a new pipe.
@@ -113,16 +113,16 @@ func (p *Pipe) Transfer(dst io.Writer, src io.Reader) (int64, error) {
 }
 
 // Tee arranges for data in the read side of the pipe to be mirrored to the
-// specified writers. There is no internal buffering: writes must complete
+// specified writer. There is no internal buffering: writes must complete
 // before the associated read completes.
 //
-// For io.Writer arguments with concrete type *Pipe, the tee(2) system call
+// If the argument is of concrete type *Pipe, the tee(2) system call
 // is used when mirroring data from the read side of the pipe.
 //
 // Tee must not be called concurrently with I/O methods, and must be called
 // only once, and before any calls to Read or WriteTo.
-func (p *Pipe) Tee(ws ...io.Writer) {
-	p.tee(ws...)
+func (p *Pipe) Tee(w io.Writer) {
+	p.tee(w)
 }
 
 var errNotImplemented = errors.New("not implemented")

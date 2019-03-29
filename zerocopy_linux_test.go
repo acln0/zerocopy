@@ -29,65 +29,46 @@ func TestTeeRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	const n = 3
-
-	secondaries := make([]*zerocopy.Pipe, n)
-	for i := 0; i < n; i++ {
-		secondary, err := zerocopy.NewPipe()
-		if err != nil {
-			t.Fatal(err)
-		}
-		secondaries[i] = secondary
+	secondary, err := zerocopy.NewPipe()
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	ws := make([]io.Writer, n)
-	for i := 0; i < n; i++ {
-		ws[i] = secondaries[i]
-	}
-	primary.Tee(ws...)
+	primary.Tee(secondary)
 
 	msg := "hello world"
-
-	errs := make([]error, 0, n)
-
-	var wg sync.WaitGroup
-	wg.Add(n + 1)
-	for i := 0; i < n; i++ {
-		go func(i int) {
-			defer wg.Done()
-			buf := make([]byte, len(msg))
-			_, err := io.ReadFull(secondaries[i], buf)
-			if err != nil {
-				errs[i] = err
-				return
-			}
-			if string(buf) != msg {
-				errs[i] = fmt.Errorf("got %q, want %q", buf, msg)
-			}
-		}(i)
-	}
-
-	var primaryerr error
-
+	var (
+		wg           sync.WaitGroup
+		primaryerr   error
+		secondaryerr error
+	)
+	wg.Add(2)
 	go func() {
+		defer wg.Done()
+		buf := make([]byte, len(msg))
+		_, secondaryerr = io.ReadFull(secondary, buf)
+		if secondaryerr != nil {
+			return
+		}
+		if string(buf) != msg {
+			secondaryerr = fmt.Errorf("got %q, want %q", buf, msg)
+		}
+	}()
+	go func() {
+		defer wg.Done()
 		_, primaryerr = io.Copy(ioutil.Discard, onlyReader{primary})
-		wg.Done()
 	}()
 
 	if _, err := io.WriteString(primary, msg); err != nil {
 		t.Fatal(err)
 	}
 	primary.CloseWrite()
-	println("waiting")
 	wg.Wait()
+
 	if primaryerr != nil {
 		t.Error(primaryerr)
 	}
-	for _, err := range errs {
-		if err != nil {
-			t.Error(err)
-		}
+	if secondaryerr != nil {
+		t.Error(secondaryerr)
 	}
 }
 
