@@ -103,15 +103,6 @@ func (p *Pipe) WriteTo(dst io.Writer) (int64, error) {
 	return p.writeTo(dst)
 }
 
-// Transfer is like io.Copy, but moves data through the pipe rather than
-// through a userspace buffer. Transfer is also like calling p.ReadFrom(src)
-// and p.WriteTo(dst), but in lock-step, and using a single goroutine.
-//
-// Transfer uses splice(2) if possible.
-func (p *Pipe) Transfer(dst io.Writer, src io.Reader) (int64, error) {
-	return p.transfer(dst, src)
-}
-
 // Tee arranges for data in the read side of the pipe to be mirrored to the
 // specified writer. There is no internal buffering: writes must complete
 // before the associated read completes.
@@ -123,6 +114,15 @@ func (p *Pipe) Transfer(dst io.Writer, src io.Reader) (int64, error) {
 // only once, and before any calls to Read or WriteTo.
 func (p *Pipe) Tee(w io.Writer) {
 	p.tee(w)
+}
+
+// Transfer is like io.Copy, but moves data through a pipe rather than
+// through a userspace buffer. Transfer is also like calling p.ReadFrom(src)
+// and p.WriteTo(dst), but in lock-step, and using a single goroutine.
+//
+// Transfer uses splice(2) if possible.
+func Transfer(dst io.Writer, src io.Reader) (int64, error) {
+	return transfer(dst, src)
 }
 
 var errNotImplemented = errors.New("not implemented")

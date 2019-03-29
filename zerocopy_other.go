@@ -30,8 +30,8 @@ func (p *Pipe) writeTo(dst io.Writer) (int64, error) {
 	return io.Copy(dst, p.r)
 }
 
-func (p *Pipe) transfer(dst io.Writer, src io.Reader) (int64, error) {
-	return 0, errNotImplemented
+func transfer(dst io.Writer, src io.Reader) (int64, error) {
+	return io.Copy(dst, src)
 }
 
 func (p *Pipe) tee(w io.Writer) {

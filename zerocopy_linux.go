@@ -268,8 +268,8 @@ again:
 	goto again
 }
 
-func (p *Pipe) transfer(dst io.Writer, src io.Reader) (int64, error) {
-	return 0, errNotImplemented
+func transfer(dst io.Writer, src io.Reader) (int64, error) {
+	return io.Copy(dst, src) // TODO(acln): implement
 }
 
 func (p *Pipe) tee(w io.Writer) {
