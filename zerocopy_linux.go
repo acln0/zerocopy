@@ -22,25 +22,31 @@ import (
 )
 
 func (p *Pipe) read(b []byte) (int, error) {
+	// There are three cases here:
+	//
+	// If p is not configured to tee data to another writer, then
+	// p.teepipe is nil, and p.teerd is p.r.
+	//
+	// If p is configured to tee data to an io.Writer that is not a *Pipe,
+	// then p.teepipe is nil, and p.teerd is an io.TeeReader of p.r and
+	// the io.Writer.
+	//
+	// Finally, if p is configured to tee data to another *Pipe, then
+	// p.teepipe is not nil, and p.teerd is p.r.
 	if p.teepipe == nil {
 		return p.teerd.Read(b)
 	}
 
-	// The first thing we must do is a tee from our read side of the
-	// pipe to the first pipe registered in the tee. The caller asked
-	// for at most len(b) bytes, so that is the upper bound for how much
-	// we can move.
-	//
-	// Normally, there are flow control considerations to keep in mind for
-	// such code, but since our pipeline runs in lock-step by definition,
-	// we do the simple thing and let the size of the first transfer guide
-	// us. In other words, we only try to move as much as we manage on
-	// the first successful tee(2). This quantity is given by inPipe.
+	// Here, we are on the tee(2) code path. When more than one stream of
+	// data is involved, there are usually flow control considerations to
+	// keep in mind, but here, we try to do the simple thing. We let the
+	// size of the first tee guide us.
 	//
 	// Hopefully this approach is good enough for general use. Doing
 	// anything else would be exceptionally complicated, and would require
 	// the library to be either very configurable, or very opinionated.
 	var (
+		copied int64
 		werr   error
 		wrcerr error
 	)
@@ -49,7 +55,7 @@ func (p *Pipe) read(b []byte) (int, error) {
 	ok := false
 	p.rrc.Read(func(prfd uintptr) bool {
 		wrcerr = p.teepipe.wrc.Write(func(pwfd uintptr) bool {
-			_, werr = tee(prfd, pwfd, len(b))
+			copied, werr = tee(prfd, pwfd, len(b))
 			if werr == unix.EAGAIN {
 				if firstwrite {
 					firstwrite = false
@@ -59,6 +65,7 @@ func (p *Pipe) read(b []byte) (int, error) {
 					return true
 				}
 			}
+			werr = os.NewSyscallError("tee", werr)
 			if werr == nil {
 				ok = true
 			}
@@ -85,18 +92,23 @@ func (p *Pipe) read(b []byte) (int, error) {
 	// pipe. Nevertheless, we should read from the pipe, but report
 	// the dead pipe file descriptor as an error, since this is what
 	// io.TeeReader does as well.
-	n, err := p.teerd.Read(b)
+	//
+	// Finally, we must be careful not to read more than we copied to
+	// the other pipe, otherwise we will have missed data.
+	limit := len(b)
+	if copied > 0 {
+		limit = int(copied)
+	}
+	n, err := p.teerd.Read(b[:limit])
 	if wrcerr != nil {
 		return n, wrcerr
 	}
 	return n, err
 }
 
-// tee calls tee(2) with SPLICE_F_NONBLOCK, and wraps the error (if any)
-// in an *os.SyscallError.
+// tee calls tee(2) with SPLICE_F_NONBLOCK.
 func tee(rfd, wfd uintptr, max int) (int64, error) {
-	n, err := unix.Tee(int(rfd), int(wfd), max, unix.SPLICE_F_NONBLOCK)
-	return n, os.NewSyscallError("tee", err)
+	return unix.Tee(int(rfd), int(wfd), max, unix.SPLICE_F_NONBLOCK)
 }
 
 func (p *Pipe) readFrom(src io.Reader) (int64, error) {
