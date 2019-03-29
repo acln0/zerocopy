@@ -15,22 +15,14 @@
 package zerocopy
 
 import (
-	"bytes"
-	"fmt"
 	"io"
-	"log"
 	"os"
-	"runtime"
-	"strconv"
 	"syscall"
 
 	"golang.org/x/sys/unix"
 )
 
 func (p *Pipe) read(b []byte) (int, error) {
-	prefix := fmt.Sprintf("g=%d: ", getGID())
-	l := log.New(os.Stdout, prefix, 0)
-	l.Printf("ENTER: %d\n", len(b))
 	// There are three cases here:
 	//
 	// If p is not configured to tee data to another writer, then
@@ -61,23 +53,15 @@ func (p *Pipe) read(b []byte) (int, error) {
 	)
 	readready := false
 	waitread := false
-	ok := false
 	p.rrc.Read(func(prfd uintptr) bool {
-		if readready {
-			l.Printf("read ready\n")
-		}
 		wrcerr = p.teepipe.wrc.Write(func(pwfd uintptr) bool {
 			copied, werr = tee(prfd, pwfd, len(b))
-			l.Printf("tee(%d): %d, %v\n", len(b), copied, werr)
 			if werr == unix.EAGAIN {
 				if !readready {
 					waitread = true
 					return true
 				}
 				return false
-			}
-			if werr == nil {
-				ok = true
 			}
 			werr = os.NewSyscallError("tee", werr)
 			return true
@@ -87,12 +71,10 @@ func (p *Pipe) read(b []byte) (int, error) {
 			// be ready to read.
 			readready = true
 			waitread = false
-			l.Println("waiting in read")
 			return false
 		}
 		return true
 	})
-	_ = ok
 	// We are deliberately ignoring the error from this last call to
 	// p.rrc.Read: a Read on a syscall.RawConn only returns an error
 	// if the file descriptor is closed. If the read side of the pipe
@@ -113,7 +95,6 @@ func (p *Pipe) read(b []byte) (int, error) {
 	if copied > 0 {
 		limit = int(copied)
 	}
-	l.Println("entering p.teerd.Read")
 	n, err := p.teerd.Read(b[:limit])
 	if wrcerr != nil {
 		return n, wrcerr
@@ -124,6 +105,7 @@ func (p *Pipe) read(b []byte) (int, error) {
 const maxSpliceSize = 4 << 20
 
 func (p *Pipe) readFrom(src io.Reader) (int64, error) {
+	// If src is a limited reader, honor the limit.
 	var (
 		rd    io.Reader
 		limit int64 = 1<<63 - 1
@@ -151,8 +133,9 @@ func (p *Pipe) readFrom(src io.Reader) (int64, error) {
 		wrcerr error
 	)
 again:
-	firstwrite := true
-	writeready := false
+	readready := false
+	waitread := false
+	fallback := false
 	max := maxSpliceSize
 	if int64(max) > limit {
 		max = int(limit)
@@ -161,32 +144,46 @@ again:
 		wrcerr = p.wrc.Write(func(pwfd uintptr) bool {
 			var n int64
 			n, werr = splice(rfd, pwfd, max)
-			// TODO(acln): fall back on EINVAL
 			limit -= n
 			moved += n
+			if werr == unix.EINVAL {
+				fallback = true
+				return true
+			}
 			if werr == unix.EAGAIN {
-				if firstwrite {
-					firstwrite = false
-					return false
-				} else {
-					writeready = true
+				if !readready {
+					waitread = true
 					return true
 				}
+				return false
+			}
+			if n == 0 && werr == nil {
+				atEOF = true
 			}
 			werr = os.NewSyscallError("splice", werr)
-			if werr == nil {
-				ok = true
-			}
 			return true
 		})
+		if wrcerr != nil {
+			return true
+		}
+		if fallback {
+			return true
+		}
 		if werr != nil {
 			return true
 		}
-		if writeready && !ok {
+		if waitread {
+			// The next time we enter this function, we will
+			// be ready to read.
+			readready = true
+			waitread = false
 			return false
 		}
 		return true
 	})
+	if fallback {
+		return io.Copy(p.w, src)
+	}
 	if err != nil {
 		return moved, err
 	}
@@ -222,37 +219,46 @@ func (p *Pipe) writeTo(dst io.Writer) (int64, error) {
 		wrcerr error
 	)
 again:
-	firstwrite := true
-	writeready := false
+	readready := false
+	waitread := false
+	fallback := false
 	err = p.rrc.Read(func(prfd uintptr) bool {
 		wrcerr = rc.Write(func(wfd uintptr) bool {
 			var n int64
 			n, werr = splice(prfd, wfd, maxSpliceSize)
-			// TODO(acln): fall back on EINVAL
 			moved += n
+			if werr == unix.EINVAL {
+				fallback = true
+				return true
+			}
 			if werr == unix.EAGAIN {
-				if firstwrite {
-					firstwrite = false
-					return false
-				} else {
-					writeready = true
+				if !readready {
+					waitread = true
 					return true
 				}
+				return false
+			}
+			if n == 0 && werr == nil {
+				atEOF = true
 			}
 			werr = os.NewSyscallError("splice", werr)
-			if werr == nil {
-				ok = true
-			}
 			return true
 		})
+		if waitread {
+			// The next time we enter this function, we will
+			// be ready to read.
+			readready = true
+			waitread = false
+			return false
+		}
 		if werr != nil {
 			return true
 		}
-		if writeready && !ok {
-			return false
-		}
 		return true
 	})
+	if fallback {
+		return io.Copy(dst, p.teerd)
+	}
 	if err != nil {
 		return moved, err
 	}
@@ -293,13 +299,4 @@ func tee(rfd, wfd uintptr, max int) (int64, error) {
 // splice calls splice(2) with SPLICE_F_NONBLOCK.
 func splice(rfd, wfd uintptr, max int) (int64, error) {
 	return unix.Splice(int(rfd), nil, int(wfd), nil, max, unix.SPLICE_F_NONBLOCK)
-}
-
-func getGID() uint64 {
-	b := make([]byte, 64)
-	b = b[:runtime.Stack(b, false)]
-	b = bytes.TrimPrefix(b, []byte("goroutine "))
-	b = b[:bytes.IndexByte(b, ' ')]
-	n, _ := strconv.ParseUint(string(b), 10, 64)
-	return n
 }

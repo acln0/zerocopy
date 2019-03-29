@@ -79,7 +79,6 @@ func TestTeeChain(t *testing.T) {
 }
 
 func testTeeChain(t *testing.T, n int) {
-	println("n =", n)
 	primary, err := zerocopy.NewPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -139,5 +138,4 @@ func testTeeChain(t *testing.T, n int) {
 			t.Error(secondaryerrs[i])
 		}
 	}
-	println("ok")
 }
