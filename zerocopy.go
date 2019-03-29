@@ -23,6 +23,8 @@ import (
 // A Pipe is a buffered, unidirectional data channel.
 type Pipe struct {
 	r, w *os.File
+
+	tee []*Pipe
 }
 
 // NewPipe creates a new pipe.
@@ -46,7 +48,7 @@ func (p *Pipe) SetBufferSize(n int) error {
 
 // Read reads data from the pipe.
 func (p *Pipe) Read(b []byte) (n int, err error) {
-	return p.r.Read(b)
+	return p.read(b)
 }
 
 // CloseRead closes the read side of the pipe.
@@ -91,6 +93,15 @@ func (p *Pipe) WriteTo(dst io.Writer) (int64, error) {
 // Transfer uses splice(2) if possible.
 func (p *Pipe) Transfer(dst io.Writer, src io.Reader) (int64, error) {
 	return p.transfer(dst, src)
+}
+
+// Tee arranges for data in the read side of the pipe to mirrored to the
+// specified pipes before it can be read.
+//
+// Tee must not be called concurrently with I/O methods, and must be called
+// before any calls to Read or WriteTo.
+func (p *Pipe) Tee(pipes ...*Pipe) {
+	p.tee = pipes
 }
 
 var errNotImplemented = errors.New("not implemented")

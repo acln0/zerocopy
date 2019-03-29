@@ -16,6 +16,10 @@ package zerocopy
 
 import "io"
 
+func (p *Pipe) read(b []byte) (n int, err error) {
+	return 0, errNotImplemented
+}
+
 func (p *Pipe) readFrom(src io.Reader) (int64, error) {
 	return 0, errNotImplemented
 }
