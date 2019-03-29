@@ -169,15 +169,15 @@ again:
 		if fallback {
 			return true
 		}
-		if werr != nil {
-			return true
-		}
 		if waitread {
 			// The next time we enter this function, we will
 			// be ready to read.
 			readready = true
 			waitread = false
 			return false
+		}
+		if werr != nil {
+			return true
 		}
 		return true
 	})

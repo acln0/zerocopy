@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"net"
 	"sync"
 	"testing"
 
@@ -137,5 +138,155 @@ func testTeeChain(t *testing.T, n int) {
 		if secondaryerrs[i] != nil {
 			t.Error(secondaryerrs[i])
 		}
+	}
+}
+
+func TestReadFrom(t *testing.T) {
+	p, err := zerocopy.NewPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	ln, err := net.Listen("tcp", "localhost:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var client net.Conn
+	var dialerr error
+
+	dialdone := make(chan struct{})
+
+	go func() {
+		client, dialerr = net.Dial(ln.Addr().Network(), ln.Addr().String())
+		close(dialdone)
+	}()
+
+	server, err := ln.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+
+	<-dialdone
+	if dialerr != nil {
+		t.Fatal(dialerr)
+	}
+	defer client.Close()
+
+	msg := "hello world"
+
+	var clientwerr error
+	var prerr error
+
+	clientdone := make(chan struct{})
+	prdone := make(chan struct{})
+
+	go func() {
+		defer close(clientdone)
+		_, clientwerr = client.Write([]byte(msg))
+		client.Close()
+	}()
+
+	go func() {
+		defer close(prdone)
+		buf := make([]byte, len(msg))
+		_, prerr = io.ReadFull(p, buf)
+		if prerr != nil {
+			return
+		}
+		if string(buf) != msg {
+			prerr = fmt.Errorf("got %q, want %q", string(buf), msg)
+		}
+	}()
+
+	_, err = io.Copy(p, server)
+	<-clientdone
+	<-prdone
+
+	if err != nil {
+		t.Error(err)
+	}
+	if clientwerr != nil {
+		t.Error(err)
+	}
+	if prerr != nil {
+		t.Error(err)
+	}
+}
+
+func TestWriteTo(t *testing.T) {
+	p, err := zerocopy.NewPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	ln, err := net.Listen("tcp", "localhost:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var client net.Conn
+	var dialerr error
+
+	dialdone := make(chan struct{})
+
+	go func() {
+		client, dialerr = net.Dial(ln.Addr().Network(), ln.Addr().String())
+		close(dialdone)
+	}()
+
+	server, err := ln.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+
+	<-dialdone
+	if dialerr != nil {
+		t.Fatal(dialerr)
+	}
+	defer client.Close()
+
+	msg := "hello world"
+
+	var clientrerr error
+	var pwerr error
+
+	clientdone := make(chan struct{})
+	pwdone := make(chan struct{})
+
+	go func() {
+		defer close(clientdone)
+		buf := make([]byte, len(msg))
+		_, clientrerr = io.ReadFull(client, buf)
+		if clientrerr != nil {
+			return
+		}
+		if string(buf) != msg {
+			clientrerr = fmt.Errorf("got %q, want %q", string(buf), msg)
+		}
+	}()
+
+	go func() {
+		defer close(pwdone)
+		_, pwerr = io.WriteString(p, msg)
+		p.CloseWrite()
+	}()
+
+	_, err = io.Copy(server, p)
+	<-clientdone
+	<-pwdone
+
+	if err != nil {
+		t.Error(err)
+	}
+	if clientrerr != nil {
+		t.Error(err)
+	}
+	if pwerr != nil {
+		t.Error(err)
 	}
 }
