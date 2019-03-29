@@ -18,13 +18,16 @@ import (
 	"errors"
 	"io"
 	"os"
+	"syscall"
 )
 
 // A Pipe is a buffered, unidirectional data channel.
 type Pipe struct {
-	r, w *os.File
+	r, w     *os.File
+	rrc, wrc syscall.RawConn
 
-	tee []*Pipe
+	teerd    io.Reader
+	teepipes []*Pipe
 }
 
 // NewPipe creates a new pipe.
@@ -33,7 +36,21 @@ func NewPipe() (*Pipe, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Pipe{r: r, w: w}, nil
+	rrc, err := r.SyscallConn()
+	if err != nil {
+		return nil, err
+	}
+	wrc, err := w.SyscallConn()
+	if err != nil {
+		return nil, err
+	}
+	return &Pipe{
+		r:     r,
+		w:     w,
+		rrc:   rrc,
+		wrc:   wrc,
+		teerd: r,
+	}, nil
 }
 
 // BufferSize returns the buffer size of the pipe.
@@ -95,13 +112,17 @@ func (p *Pipe) Transfer(dst io.Writer, src io.Reader) (int64, error) {
 	return p.transfer(dst, src)
 }
 
-// Tee arranges for data in the read side of the pipe to mirrored to the
-// specified pipes before it can be read.
+// Tee arranges for data in the read side of the pipe to be mirrored to the
+// specified writers. There is no internal buffering: writes must complete
+// before the associated read completes.
+//
+// For io.Writer arguments with concrete type *Pipe, the tee(2) system call
+// is used when mirroring data from the read side of the pipe.
 //
 // Tee must not be called concurrently with I/O methods, and must be called
-// before any calls to Read or WriteTo.
-func (p *Pipe) Tee(pipes ...*Pipe) {
-	p.tee = pipes
+// only once, and before any calls to Read or WriteTo.
+func (p *Pipe) Tee(ws ...io.Writer) {
+	p.tee(ws...)
 }
 
 var errNotImplemented = errors.New("not implemented")

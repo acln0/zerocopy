@@ -33,3 +33,14 @@ func (p *Pipe) writeTo(dst io.Writer) (int64, error) {
 func (p *Pipe) transfer(dst io.Writer, src io.Reader) (int64, error) {
 	return 0, errNotImplemented
 }
+
+func (p *Pipe) tee(ws ...io.Writer) {
+	switch len(ws) {
+	case 0:
+		p.teerd = p.r
+	case 1:
+		p.teerd = io.TeeReader(p.r, ws[0])
+	default:
+		p.teerd = io.TeeReader(p.r, io.MultiWriter(ws...))
+	}
+}
