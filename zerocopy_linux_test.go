@@ -71,3 +71,73 @@ func TestTeeRead(t *testing.T) {
 		t.Error(secondaryerr)
 	}
 }
+
+func TestTeeChain(t *testing.T) {
+	for n := 1; n <= 10; n++ {
+		testTeeChain(t, n)
+	}
+}
+
+func testTeeChain(t *testing.T, n int) {
+	println("n =", n)
+	primary, err := zerocopy.NewPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	secondaries := make([]*zerocopy.Pipe, n)
+	for i := 0; i < n; i++ {
+		secondaries[i], err = zerocopy.NewPipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < n-1; i++ {
+		secondaries[i].Tee(secondaries[i+1])
+	}
+	primary.Tee(secondaries[0])
+
+	msg := "hello world"
+	var (
+		wg            sync.WaitGroup
+		primaryerr    error
+		secondaryerrs = make([]error, n)
+	)
+	wg.Add(n + 1)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer wg.Done()
+			buf := make([]byte, len(msg))
+			_, err := io.ReadFull(secondaries[i], buf)
+			if err != nil {
+				secondaryerrs[i] = err
+				return
+			}
+			if string(buf) != msg {
+				secondaryerrs[i] = fmt.Errorf("got %q, want %q", buf, msg)
+			}
+		}(i)
+	}
+	go func() {
+		defer wg.Done()
+		_, primaryerr = io.Copy(ioutil.Discard, primary)
+	}()
+
+	if _, err := io.WriteString(primary, msg); err != nil {
+		t.Fatal(err)
+	}
+	if err := primary.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	wg.Wait()
+
+	if primaryerr != nil {
+		t.Error(primaryerr)
+	}
+	for i := 0; i < n; i++ {
+		if secondaryerrs[i] != nil {
+			t.Error(secondaryerrs[i])
+		}
+	}
+	println("ok")
+}
