@@ -17,6 +17,7 @@ package zerocopy
 import (
 	"io"
 	"os"
+	"syscall"
 
 	"golang.org/x/sys/unix"
 )
@@ -106,17 +107,151 @@ func (p *Pipe) read(b []byte) (int, error) {
 	return n, err
 }
 
-// tee calls tee(2) with SPLICE_F_NONBLOCK.
-func tee(rfd, wfd uintptr, max int) (int64, error) {
-	return unix.Tee(int(rfd), int(wfd), max, unix.SPLICE_F_NONBLOCK)
-}
+const maxSpliceSize = 4 << 20
 
 func (p *Pipe) readFrom(src io.Reader) (int64, error) {
-	return 0, errNotImplemented
+	var (
+		rd    io.Reader
+		limit int64 = 1<<63 - 1
+	)
+	lr, ok := src.(*io.LimitedReader)
+	if ok {
+		rd = lr.R
+		limit = lr.N
+	} else {
+		rd = src
+	}
+	sc, ok := rd.(syscall.Conn)
+	if !ok {
+		return io.Copy(p.w, src)
+	}
+	rc, err := sc.SyscallConn()
+	if err != nil {
+		return 0, err
+	}
+
+	var (
+		atEOF  bool
+		moved  int64
+		werr   error
+		wrcerr error
+	)
+again:
+	firstwrite := true
+	writeready := false
+	max := maxSpliceSize
+	if int64(max) > limit {
+		max = int(limit)
+	}
+	err = rc.Read(func(rfd uintptr) bool {
+		wrcerr = p.wrc.Write(func(pwfd uintptr) bool {
+			var n int64
+			n, werr = splice(rfd, pwfd, max)
+			// TODO(acln): fall back on EINVAL
+			limit -= n
+			moved += n
+			if werr == unix.EAGAIN {
+				if firstwrite {
+					firstwrite = false
+					return false
+				} else {
+					writeready = true
+					return true
+				}
+			}
+			werr = os.NewSyscallError("splice", werr)
+			if werr == nil {
+				ok = true
+			}
+			return true
+		})
+		if werr != nil {
+			return true
+		}
+		if writeready && !ok {
+			return false
+		}
+		return true
+	})
+	if err != nil {
+		return moved, err
+	}
+	if wrcerr != nil {
+		return moved, err
+	}
+	if werr != nil {
+		return moved, err
+	}
+	if atEOF {
+		return moved, nil
+	}
+	if limit > 0 {
+		goto again
+	}
+	return moved, nil
 }
 
 func (p *Pipe) writeTo(dst io.Writer) (int64, error) {
-	return 0, errNotImplemented
+	sc, ok := dst.(syscall.Conn)
+	if !ok {
+		return io.Copy(dst, onlyReader{p})
+	}
+	rc, err := sc.SyscallConn()
+	if err != nil {
+		return 0, err
+	}
+
+	var (
+		atEOF  bool
+		moved  int64
+		werr   error
+		wrcerr error
+	)
+again:
+	firstwrite := true
+	writeready := false
+	err = p.rrc.Read(func(prfd uintptr) bool {
+		wrcerr = rc.Write(func(wfd uintptr) bool {
+			var n int64
+			n, werr = splice(prfd, wfd, maxSpliceSize)
+			// TODO(acln): fall back on EINVAL
+			moved += n
+			if werr == unix.EAGAIN {
+				if firstwrite {
+					firstwrite = false
+					return false
+				} else {
+					writeready = true
+					return true
+				}
+			}
+			werr = os.NewSyscallError("splice", werr)
+			if werr == nil {
+				ok = true
+			}
+			return true
+		})
+		if werr != nil {
+			return true
+		}
+		if writeready && !ok {
+			return false
+		}
+		return true
+	})
+	if err != nil {
+		return moved, err
+	}
+	if wrcerr != nil {
+		return moved, err
+	}
+	if werr != nil {
+		return moved, err
+	}
+	if atEOF {
+		return moved, nil
+	}
+	goto again
 }
 
 func (p *Pipe) transfer(dst io.Writer, src io.Reader) (int64, error) {
@@ -130,4 +265,18 @@ func (p *Pipe) tee(w io.Writer) {
 	} else {
 		p.teerd = io.TeeReader(p.r, w)
 	}
+}
+
+type onlyReader struct {
+	io.Reader
+}
+
+// tee calls tee(2) with SPLICE_F_NONBLOCK.
+func tee(rfd, wfd uintptr, max int) (int64, error) {
+	return unix.Tee(int(rfd), int(wfd), max, unix.SPLICE_F_NONBLOCK)
+}
+
+// splice calls splice(2) with SPLICE_F_NONBLOCK.
+func splice(rfd, wfd uintptr, max int) (int64, error) {
+	return unix.Splice(int(rfd), nil, int(wfd), nil, max, unix.SPLICE_F_NONBLOCK)
 }

@@ -55,7 +55,7 @@ func TestTeeRead(t *testing.T) {
 	}()
 	go func() {
 		defer wg.Done()
-		_, primaryerr = io.Copy(ioutil.Discard, onlyReader{primary})
+		_, primaryerr = io.Copy(ioutil.Discard, primary)
 	}()
 
 	if _, err := io.WriteString(primary, msg); err != nil {
@@ -70,8 +70,4 @@ func TestTeeRead(t *testing.T) {
 	if secondaryerr != nil {
 		t.Error(secondaryerr)
 	}
-}
-
-type onlyReader struct {
-	io.Reader
 }
