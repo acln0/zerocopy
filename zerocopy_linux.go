@@ -22,6 +22,47 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+func (p *Pipe) bufferSize() (int, error) {
+	var (
+		size  uintptr
+		errno syscall.Errno
+	)
+	err := p.wrc.Control(func(fd uintptr) {
+		size, _, errno = unix.Syscall(
+			unix.SYS_FCNTL,
+			fd,
+			unix.F_GETPIPE_SZ,
+			0,
+		)
+	})
+	if err != nil {
+		return 0, err
+	}
+	if errno != 0 {
+		return 0, os.NewSyscallError("getpipesz", errno)
+	}
+	return int(size), nil
+}
+
+func (p *Pipe) setBufferSize(n int) error {
+	var errno syscall.Errno
+	err := p.wrc.Control(func(fd uintptr) {
+		_, _, errno = unix.Syscall(
+			unix.SYS_FCNTL,
+			fd,
+			unix.F_SETPIPE_SZ,
+			uintptr(n),
+		)
+	})
+	if err != nil {
+		return err
+	}
+	if errno != 0 {
+		return os.NewSyscallError("setpipesz", errno)
+	}
+	return nil
+}
+
 func (p *Pipe) read(b []byte) (int, error) {
 	// There are three cases here:
 	//

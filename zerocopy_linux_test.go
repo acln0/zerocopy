@@ -30,10 +30,14 @@ func TestTeeRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer primary.Close()
+
 	secondary, err := zerocopy.NewPipe()
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer secondary.Close()
+
 	primary.Tee(secondary)
 
 	msg := "hello world"
@@ -84,6 +88,7 @@ func testTeeChain(t *testing.T, n int) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer primary.Close()
 
 	secondaries := make([]*zerocopy.Pipe, n)
 	for i := 0; i < n; i++ {
@@ -91,6 +96,7 @@ func testTeeChain(t *testing.T, n int) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		defer secondaries[i].Close()
 	}
 	for i := 0; i < n-1; i++ {
 		secondaries[i].Tee(secondaries[i+1])
@@ -288,5 +294,25 @@ func TestWriteTo(t *testing.T) {
 	}
 	if pwerr != nil {
 		t.Error(err)
+	}
+}
+
+func TestSetBufferSize(t *testing.T) {
+	n := 32 * 4096
+	p, err := zerocopy.NewPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	if err := p.SetBufferSize(n); err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.BufferSize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != n {
+		t.Fatalf("got %d, want %d", got, n)
 	}
 }

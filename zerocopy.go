@@ -55,12 +55,12 @@ func NewPipe() (*Pipe, error) {
 
 // BufferSize returns the buffer size of the pipe.
 func (p *Pipe) BufferSize() (int, error) {
-	return 0, errNotImplemented
+	return p.bufferSize()
 }
 
 // SetBufferSize sets the pipe's buffer size to n.
 func (p *Pipe) SetBufferSize(n int) error {
-	return errNotImplemented
+	return p.setBufferSize(n)
 }
 
 // Read reads data from the pipe.
