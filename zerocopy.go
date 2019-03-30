@@ -15,7 +15,6 @@
 package zerocopy
 
 import (
-	"errors"
 	"io"
 	"os"
 	"syscall"
@@ -124,5 +123,3 @@ func (p *Pipe) Tee(w io.Writer) {
 func Transfer(dst io.Writer, src io.Reader) (int64, error) {
 	return transfer(dst, src)
 }
-
-var errNotImplemented = errors.New("not implemented")

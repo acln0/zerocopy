@@ -158,6 +158,7 @@ func TestReadFrom(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer ln.Close()
 
 	var client net.Conn
 	var dialerr error
@@ -233,6 +234,7 @@ func TestWriteTo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer ln.Close()
 
 	var client net.Conn
 	var dialerr error
@@ -294,6 +296,97 @@ func TestWriteTo(t *testing.T) {
 	}
 	if pwerr != nil {
 		t.Error(err)
+	}
+}
+
+func TestTransfer(t *testing.T) {
+	ln, err := net.Listen("tcp", "localhost:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	var clientup net.Conn
+	var uperr error
+
+	updone := make(chan struct{})
+
+	go func() {
+		clientup, uperr = net.Dial(ln.Addr().Network(), ln.Addr().String())
+		close(updone)
+	}()
+
+	serverup, err := ln.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverup.Close()
+
+	<-updone
+	if uperr != nil {
+		t.Fatal(err)
+	}
+
+	var clientdown net.Conn
+	var downerr error
+
+	downdone := make(chan struct{})
+
+	go func() {
+		clientdown, downerr = net.Dial(ln.Addr().Network(), ln.Addr().String())
+		close(downdone)
+	}()
+
+	serverdown, err := ln.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverdown.Close()
+
+	<-downdone
+	if downerr != nil {
+		t.Fatal(err)
+	}
+
+	msg := "hello world"
+
+	var werr error
+
+	wdone := make(chan struct{})
+
+	go func() {
+		_, werr = clientup.Write([]byte(msg))
+		clientup.Close()
+		close(wdone)
+	}()
+
+	var rerr error
+
+	rdone := make(chan struct{})
+
+	go func() {
+		defer close(rdone)
+		buf := make([]byte, len(msg))
+		_, rerr = io.ReadFull(clientdown, buf)
+		if rerr != nil {
+			return
+		}
+		if string(buf) != msg {
+			rerr = fmt.Errorf("got %q, want %q", string(buf), msg)
+		}
+	}()
+
+	_, err = zerocopy.Transfer(serverdown, serverup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-wdone
+	<-rdone
+	if werr != nil {
+		t.Error(werr)
+	}
+	if rerr != nil {
+		t.Error(rerr)
 	}
 }
 

@@ -164,7 +164,7 @@ func (p *Pipe) readFrom(src io.Reader) (int64, error) {
 	}
 	rc, err := sc.SyscallConn()
 	if err != nil {
-		return 0, err
+		return io.Copy(p.w, src)
 	}
 
 	var (
@@ -183,10 +183,10 @@ again:
 	}
 	err = rc.Read(func(rfd uintptr) bool {
 		wrcerr = p.wrc.Write(func(pwfd uintptr) bool {
-			var n int64
+			var n int
 			n, werr = splice(rfd, pwfd, max)
-			limit -= n
-			moved += n
+			limit -= int64(n)
+			moved += int64(n)
 			if werr == unix.EINVAL {
 				fallback = true
 				return true
@@ -250,7 +250,7 @@ func (p *Pipe) writeTo(dst io.Writer) (int64, error) {
 	}
 	rc, err := sc.SyscallConn()
 	if err != nil {
-		return 0, err
+		return io.Copy(dst, onlyReader{p})
 	}
 
 	var (
@@ -265,9 +265,9 @@ again:
 	fallback := false
 	err = p.rrc.Read(func(prfd uintptr) bool {
 		wrcerr = rc.Write(func(wfd uintptr) bool {
-			var n int64
+			var n int
 			n, werr = splice(prfd, wfd, maxSpliceSize)
-			moved += n
+			moved += int64(n)
 			if werr == unix.EINVAL {
 				fallback = true
 				return true
@@ -316,7 +316,155 @@ again:
 }
 
 func transfer(dst io.Writer, src io.Reader) (int64, error) {
-	return io.Copy(dst, src) // TODO(acln): implement
+	// If src is a limited reader, honor the limit.
+	var (
+		rd    io.Reader
+		limit int64 = 1<<63 - 1
+	)
+	lr, ok := src.(*io.LimitedReader)
+	if ok {
+		rd = lr.R
+		limit = lr.N
+	} else {
+		rd = src
+	}
+	rsc, ok := rd.(syscall.Conn)
+	if !ok {
+		return io.Copy(dst, src)
+	}
+	rrc, err := rsc.SyscallConn()
+	if err != nil {
+		return io.Copy(dst, src)
+	}
+
+	wsc, ok := dst.(syscall.Conn)
+	if !ok {
+		return io.Copy(dst, src)
+	}
+	wrc, err := wsc.SyscallConn()
+	if err != nil {
+		return io.Copy(dst, src)
+	}
+
+	// Now, we know that dst and src are two file descriptors
+	// that we could try to splice to / from, but we won't know
+	// for sure until we actually try.
+	//
+	// See also src/internal/poll/splice_linux.go, which this code
+	// is a pretty direct translation of.
+	p, err := NewPipe()
+	if err != nil {
+		return io.Copy(dst, src)
+	}
+
+	var moved int64 = 0
+	for limit > 0 {
+		max := maxSpliceSize
+		if int64(max) > limit {
+			max = int(limit)
+		}
+		inpipe, fallback, err := spliceDrain(p, rrc, max)
+		limit -= int64(inpipe)
+		if fallback {
+			return io.Copy(dst, src)
+		}
+		if inpipe == 0 && err == nil {
+			return moved, nil
+		}
+		n, fallback, err := splicePump(wrc, p, inpipe)
+		moved += int64(n)
+		if fallback {
+			// dst doesn't support splicing, but we've already
+			// read from src, so we need to empty the pipe,
+			// and then switch to a regular io.Copy.
+			n1, err := io.CopyN(dst, p.w, int64(inpipe))
+			moved += n1
+			if err != nil {
+				return n1, err
+			}
+			n2, err := io.Copy(dst, src)
+			return n1 + n2, err
+		}
+		if err != nil {
+			return moved, err
+		}
+	}
+	return moved, nil
+}
+
+func spliceDrain(p *Pipe, rrc syscall.RawConn, max int) (int, bool, error) {
+	var (
+		moved  int
+		rrcerr error
+		serr   error
+	)
+	fallback := false
+	err := p.wrc.Write(func(pwfd uintptr) bool {
+		rrcerr = rrc.Read(func(rfd uintptr) bool {
+			var n int
+			n, serr = splice(rfd, pwfd, max)
+			moved = int(n)
+			if serr == unix.EINVAL {
+				fallback = true
+				return true
+			}
+			if serr == unix.EAGAIN {
+				return false
+			}
+			return true
+		})
+		return true
+	})
+	if err != nil {
+		return 0, false, err
+	}
+	if rrcerr != nil {
+		return 0, false, rrcerr
+	}
+	return moved, fallback, serr
+}
+
+func splicePump(wrc syscall.RawConn, p *Pipe, inpipe int) (int, bool, error) {
+	var (
+		fallback bool
+		moved    int
+		wrcerr   error
+		serr     error
+	)
+again:
+	err := p.rrc.Read(func(prfd uintptr) bool {
+		wrcerr = wrc.Read(func(wfd uintptr) bool {
+			var n int
+			n, serr = splice(prfd, wfd, inpipe)
+			moved += int(n)
+			inpipe -= int(n)
+			if serr == unix.EINVAL {
+				fallback = true
+				return true
+			}
+			if serr == unix.EAGAIN {
+				return false
+			}
+			return true
+		})
+		return true
+	})
+	if fallback {
+		return moved, true, nil
+	}
+	if err != nil {
+		return moved, false, err
+	}
+	if wrcerr != nil {
+		return moved, false, wrcerr
+	}
+	if serr != nil {
+		return moved, false, serr
+	}
+	if inpipe > 0 {
+		goto again
+	}
+	return moved, false, nil
 }
 
 func (p *Pipe) tee(w io.Writer) {
@@ -338,6 +486,7 @@ func tee(rfd, wfd uintptr, max int) (int64, error) {
 }
 
 // splice calls splice(2) with SPLICE_F_NONBLOCK.
-func splice(rfd, wfd uintptr, max int) (int64, error) {
-	return unix.Splice(int(rfd), nil, int(wfd), nil, max, unix.SPLICE_F_NONBLOCK)
+func splice(rfd, wfd uintptr, max int) (int, error) {
+	n, err := unix.Splice(int(rfd), nil, int(wfd), nil, max, unix.SPLICE_F_NONBLOCK)
+	return int(n), err
 }

@@ -16,10 +16,21 @@
 
 package zerocopy
 
-import "io"
+import (
+	"errors"
+	"io"
+)
+
+func (p *Pipe) bufferSize() (int, error) {
+	return 0, errors.New("not supported")
+}
+
+func (p *Pipe) setBufferSize(n int) error {
+	return errors.New("not supported")
+}
 
 func (p *Pipe) read(b []byte) (n int, err error) {
-	return 0, errNotImplemented
+	return p.teerd.Read(b)
 }
 
 func (p *Pipe) readFrom(src io.Reader) (int64, error) {
