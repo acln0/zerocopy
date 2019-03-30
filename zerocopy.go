@@ -93,11 +93,19 @@ func (p *Pipe) Close() error {
 }
 
 // ReadFrom transfers data from src to the pipe.
+//
+// If src implements syscall.Conn, ReadFrom tries to use splice(2) for the
+// data transfer from the source file descriptor to the pipe. If that is
+// not possible, ReadFrom falls back to a generic copy.
 func (p *Pipe) ReadFrom(src io.Reader) (int64, error) {
 	return p.readFrom(src)
 }
 
 // WriteTo transfers data from the pipe to dst.
+//
+// If dst implements syscall.Conn, WriteTo tries to use splice(2) for the
+// data transfer from the pipe to the destination file descriptor. If that
+// is not possible, WriteTo falls back to a generic copy.
 func (p *Pipe) WriteTo(dst io.Writer) (int64, error) {
 	return p.writeTo(dst)
 }
@@ -115,11 +123,22 @@ func (p *Pipe) Tee(w io.Writer) {
 	p.tee(w)
 }
 
-// Transfer is like io.Copy, but moves data through a pipe rather than
-// through a userspace buffer. Transfer is also like calling p.ReadFrom(src)
-// and p.WriteTo(dst), but in lock-step, and using a single goroutine.
+// Transfer is like io.Copy, but moves data through a pipe rather than through
+// a userspace buffer. Given a pipe p, Transfer operates equivalently to
+// p.ReadFrom(src) and p.WriteTo(dst), but in lock-step, and with no need
+// to create additional goroutines.
 //
-// Transfer uses splice(2) if possible.
+// Conceptually:
+//
+// 	Transfer(upstream, downstream)
+//
+// is equivalent to
+//
+// 	p, _ := NewPipe()
+// 	go p.ReadFrom(downstream)
+// 	p.WriteTo(upstream)
+//
+// but in more compact form, and slightly more resource-efficient.
 func Transfer(dst io.Writer, src io.Reader) (int64, error) {
 	return transfer(dst, src)
 }
