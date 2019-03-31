@@ -88,3 +88,10 @@ func server(camera net.Conn, recording *os.File, client net.Conn) error {
 	// ...
 }
 ```
+
+## License
+
+Pacakge zerocopy is distributed under a BSD-style license. Apart from
+the work belonging to the author, package zerocopy adapts and copies
+Go standard library code and tests. See the LICENSE file, as well as
+the individual copyright headers in source files.
