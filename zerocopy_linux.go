@@ -365,9 +365,6 @@ again:
 			operr = os.NewSyscallError("splice", operr)
 			return true
 		})
-		if fallback {
-			return true
-		}
 		if waitread {
 			readready = true
 			waitread = false
@@ -481,9 +478,6 @@ again:
 			operr = os.NewSyscallError("splice", operr)
 			return true
 		})
-		if fallback {
-			return true
-		}
 		if waitread {
 			readready = true
 			waitread = false
