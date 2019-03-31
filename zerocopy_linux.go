@@ -30,15 +30,14 @@ in terms of error handling, the algorithm is presented in pseudo-code.
 Preparatory definitions
 -----------------------
 
-increfscope takes a file descriptor argument, acquires a reference to
-descritpro, runs the block of code, then releases the reference when control
+increfscope takes a file descriptor argument, acquires a reference to the
+descriptor, runs the block of code, then releases the reference when control
 exits the block (either naturally or via a goto statement).
 
 transfer is a data transfer function, either splice(2) or tee(2).
 
 wait waits for its file descriptor argument to be ready for an operation,
 either 'r' for reading, or 'w' for writing.
-
 
 The algorithm
 -------------
