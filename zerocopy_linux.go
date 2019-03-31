@@ -325,6 +325,11 @@ func (p *Pipe) readFrom(src io.Reader) (int64, error) {
 		waitwrite     = false
 		waitreadagain = false
 	)
+	if lr != nil {
+		defer func(v *int64) {
+			lr.N -= *v
+		}(&moved)
+	}
 again:
 	ok = false
 	max := maxSpliceSize
@@ -335,8 +340,10 @@ again:
 		wrcerr = p.wrc.Write(func(pwfd uintptr) bool {
 			var n int
 			n, operr = splice(rfd, pwfd, max)
-			limit -= int64(n)
-			moved += int64(n)
+			if n > 0 {
+				limit -= int64(n)
+				moved += int64(n)
+			}
 			if operr == unix.EINVAL {
 				fallback = true
 				return true
@@ -383,8 +390,10 @@ again:
 		rrcerr = rrc.Read(func(rfd uintptr) bool {
 			var n int
 			n, operr = splice(rfd, pwfd, max)
-			limit -= int64(n)
-			moved += int64(n)
+			if n > 0 {
+				limit -= int64(n)
+				moved += int64(n)
+			}
 			if operr == unix.EAGAIN {
 				if writeready {
 					waitreadagain = true
@@ -449,7 +458,9 @@ again:
 		wrcerr = wrc.Write(func(pwfd uintptr) bool {
 			var n int
 			n, operr = splice(rfd, pwfd, maxSpliceSize)
-			moved += int64(n)
+			if n > 0 {
+				moved += int64(n)
+			}
 			if operr == unix.EINVAL {
 				fallback = true
 				return true
@@ -493,7 +504,9 @@ again:
 		rrcerr = p.rrc.Read(func(rfd uintptr) bool {
 			var n int
 			n, operr = splice(rfd, pwfd, maxSpliceSize)
-			moved += int64(n)
+			if n > 0 {
+				moved += int64(n)
+			}
 			if operr == unix.EAGAIN {
 				if writeready {
 					waitreadagain = true
@@ -571,6 +584,11 @@ func transfer(dst io.Writer, src io.Reader) (int64, error) {
 	}
 
 	var moved int64 = 0
+	if lr != nil {
+		defer func(v *int64) {
+			lr.N -= *v
+		}(&moved)
+	}
 	for limit > 0 {
 		max := maxSpliceSize
 		if int64(max) > limit {
@@ -584,8 +602,13 @@ func transfer(dst io.Writer, src io.Reader) (int64, error) {
 		if inpipe == 0 && err == nil {
 			return moved, nil
 		}
+		if err != nil {
+			return moved, err
+		}
 		n, fallback, err := splicePump(wrc, p, inpipe)
-		moved += int64(n)
+		if n > 0 {
+			moved += int64(n)
+		}
 		if fallback {
 			// dst doesn't support splicing, but we've already
 			// read from src, so we need to empty the pipe,
@@ -624,6 +647,7 @@ func spliceDrain(p *Pipe, rrc syscall.RawConn, max int) (int, bool, error) {
 			if serr == unix.EAGAIN {
 				return false
 			}
+			serr = os.NewSyscallError("splice", serr)
 			return true
 		})
 		return true
@@ -646,11 +670,13 @@ func splicePump(wrc syscall.RawConn, p *Pipe, inpipe int) (int, bool, error) {
 	)
 again:
 	err := p.rrc.Read(func(prfd uintptr) bool {
-		wrcerr = wrc.Read(func(wfd uintptr) bool {
+		wrcerr = wrc.Write(func(wfd uintptr) bool {
 			var n int
 			n, serr = splice(prfd, wfd, inpipe)
-			moved += int(n)
-			inpipe -= int(n)
+			if n > 0 {
+				moved += int(n)
+				inpipe -= int(n)
+			}
 			if serr == unix.EINVAL {
 				fallback = true
 				return true
@@ -658,6 +684,7 @@ again:
 			if serr == unix.EAGAIN {
 				return false
 			}
+			serr = os.NewSyscallError("splice", serr)
 			return true
 		})
 		return true
