@@ -40,7 +40,33 @@ to be sure.
 
 ## Usage
 
-Given the data flow described by the diagram
+Consider this diagram of a proxy server:
+
+```
++----------+       +----------------+       +------------+
+|          +<------+                +<------+            |
+| upstream |   P   |  proxy server  |   Q   | downstream |
+|          +------->                +------->            |
++----------+       +----------------+       +------------+
+```
+
+`P` and `Q` represent streaming communication protocols, for example
+TCP, or a streaming UNIX domain socket. Implementing this proxy server
+is straightforward:
+
+
+```
+func proxy(upstream, downstream net.Conn) error {
+	go zerocopy.Transfer(upstream, downstream)
+	go zerocopy.Transfer(downstream, upstream)
+
+	// ... wait, clean up, etc.
+}
+```
+
+---
+
+Consider now a slightly more complex data flow diagram.
 
 ```
                      +-----------+
@@ -59,7 +85,7 @@ Given the data flow described by the diagram
 +----------+       +----------------+       +----------+
 ```
 
-the server component could be implemented as follows:
+This server component could be implemented as follows:
 
 ```
 func server(camera net.Conn, recording *os.File, client net.Conn) error {
@@ -85,7 +111,7 @@ func server(camera net.Conn, recording *os.File, client net.Conn) error {
 	go recpipe.WriteTo(recording)
 	go campipe.WriteTo(client)
 
-	// ...
+	// ... wait, clean up etc.
 }
 ```
 
