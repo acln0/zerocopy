@@ -115,6 +115,12 @@ func server(camera net.Conn, recording *os.File, client net.Conn) error {
 }
 ```
 
+## Additional reading
+
+* [man 2 splice](http://man7.org/linux/man-pages/man2/splice.2.html)
+* [man 2 tee](http://man7.org/linux/man-pages/man2/tee.2.html)
+* [Linus Torvalds on splice(2) and tee(2)](https://yarchive.net/comp/linux/splice.html)
+
 ## License
 
 Pacakge zerocopy is distributed under a BSD-style license. Apart from
