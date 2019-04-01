@@ -11,8 +11,12 @@ possible, the pipelines fall back to userspace data transfer
 transparently. Currently, package zerocopy only offers accelerated
 I/O on Linux, and for specific types of file descriptors.
 
-Currently, package zerocopy is under active development. Bug reports
-and contributions are welcome.
+## Status
+
+This package is alpha quality software. It is under active development,
+it almost certainly has bugs, or exhibits deadlocks.
+
+Bug reports and contributions are welcome.
 
 ## Requirements
 

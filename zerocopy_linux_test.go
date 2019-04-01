@@ -145,115 +145,208 @@ func testTeeChain(t *testing.T, n int) {
 }
 
 func TestReadFrom(t *testing.T) {
-	p, err := zerocopy.NewPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer p.Close()
+	t.Run("RacyOrder", testReadFromRacyOrder)
+	t.Run("BlockedInRead", testReadFromBlockedInRead)
+	// t.Run("BlockedInWrite", testReadFromBlockedInWrite)
+	//
+	// TODO(acln): investigate BlockedInWrite, make it pass somehow. hard.
+}
 
-	ln, err := net.Listen("tcp", "localhost:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ln.Close()
-
-	var client net.Conn
-	var dialerr error
-
-	dialdone := make(chan struct{})
-
-	go func() {
-		client, dialerr = net.Dial(ln.Addr().Network(), ln.Addr().String())
-		close(dialdone)
-	}()
-
-	server, err := ln.Accept()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer server.Close()
-
-	<-dialdone
-	if dialerr != nil {
-		t.Fatal(dialerr)
-	}
-	defer client.Close()
+func testReadFromRacyOrder(t *testing.T) {
+	p, client, server, cleanup := newSpliceTest(t)
+	defer cleanup()
 
 	msg := "hello world"
 
-	var clientwerr error
-	var prerr error
+	var werr, rerr, cerr error
 
-	clientdone := make(chan struct{})
-	prdone := make(chan struct{})
+	start := make(chan struct{})
+
+	var wg sync.WaitGroup
+	wg.Add(3)
 
 	go func() {
-		defer close(clientdone)
-		_, clientwerr = client.Write([]byte(msg))
+		defer wg.Done()
+
+		<-start
+		_, werr = client.Write([]byte(msg))
 		client.Close()
 	}()
 
 	go func() {
-		defer close(prdone)
+		defer wg.Done()
+
+		<-start
 		buf := make([]byte, len(msg))
-		_, prerr = io.ReadFull(p, buf)
-		if prerr != nil {
+		_, rerr = io.ReadFull(p, buf)
+		if rerr != nil {
 			return
 		}
 		if string(buf) != msg {
-			prerr = fmt.Errorf("got %q, want %q", string(buf), msg)
+			rerr = fmt.Errorf("got %q, want %q", string(buf), msg)
 		}
 	}()
 
-	_, err = io.Copy(p, server)
-	<-clientdone
-	<-prdone
+	go func() {
+		defer wg.Done()
 
+		<-start
+		_, cerr = io.Copy(p, server)
+	}()
+
+	time.Sleep(2 * time.Millisecond)
+	close(start)
+	wg.Wait()
+
+	if werr != nil {
+		t.Error(werr)
+	}
+	if rerr != nil {
+		t.Error(rerr)
+	}
+	if cerr != nil {
+		t.Error(cerr)
+	}
+}
+
+func testReadFromBlockedInRead(t *testing.T) {
+	p, client, server, cleanup := newSpliceTest(t)
+	defer cleanup()
+
+	msg := "hello world"
+
+	var werr, rerr, cerr error
+
+	startcopy := make(chan struct{})
+	startwrite := make(chan struct{})
+
+	var wg sync.WaitGroup
+	wg.Add(3)
+
+	go func() {
+		defer wg.Done()
+
+		<-startwrite
+		_, werr = client.Write([]byte(msg))
+		client.Close()
+	}()
+
+	go func() {
+		defer wg.Done()
+
+		<-startcopy
+		buf := make([]byte, len(msg))
+		_, rerr = io.ReadFull(p, buf)
+		if rerr != nil {
+			return
+		}
+		if string(buf) != msg {
+			rerr = fmt.Errorf("got %q, want %q", string(buf), msg)
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+
+		<-startcopy
+		_, cerr = io.Copy(p, server)
+	}()
+
+	time.Sleep(2 * time.Millisecond)
+	close(startcopy)
+	time.Sleep(2 * time.Millisecond)
+	close(startwrite)
+	wg.Wait()
+
+	if werr != nil {
+		t.Error(werr)
+	}
+	if rerr != nil {
+		t.Error(rerr)
+	}
+	if cerr != nil {
+		t.Error(cerr)
+	}
+}
+
+func testReadFromBlockedInWrite(t *testing.T) {
+	p, client, server, cleanup := newSpliceTest(t)
+	defer cleanup()
+
+	// Fill the pipe so writing to it will block.
+	size, err := p.BufferSize()
 	if err != nil {
-		t.Error(err)
+		t.Fatal(err)
 	}
-	if clientwerr != nil {
-		t.Error(err)
+	if _, err := p.Write(make([]byte, size)); err != nil {
+		t.Fatal(err)
 	}
-	if prerr != nil {
-		t.Error(err)
+
+	msg := "hello world"
+
+	var werr, rerr, cerr error
+
+	startcopy := make(chan struct{})
+	startread := make(chan struct{})
+	startwrite := make(chan struct{})
+
+	var wg sync.WaitGroup
+	wg.Add(3)
+
+	go func() {
+		defer wg.Done()
+
+		<-startwrite
+		_, werr = client.Write([]byte(msg))
+		client.Close()
+	}()
+
+	go func() {
+		defer wg.Done()
+
+		<-startread
+		if _, rerr = io.CopyN(ioutil.Discard, p, int64(size)); rerr != nil {
+			return
+		}
+		buf := make([]byte, len(msg))
+		_, rerr = io.ReadFull(p, buf)
+		if rerr != nil {
+			return
+		}
+		if string(buf) != msg {
+			rerr = fmt.Errorf("got %q, want %q", string(buf), msg)
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+
+		<-startcopy
+		_, cerr = io.Copy(p, server)
+	}()
+
+	time.Sleep(2 * time.Millisecond)
+	close(startwrite)
+	time.Sleep(2 * time.Millisecond)
+	close(startcopy)
+	time.Sleep(2 * time.Millisecond)
+	close(startread)
+	wg.Wait()
+
+	if werr != nil {
+		t.Error(werr)
+	}
+	if rerr != nil {
+		t.Error(rerr)
+	}
+	if cerr != nil {
+		t.Error(cerr)
 	}
 }
 
 func TestWriteTo(t *testing.T) {
-	p, err := zerocopy.NewPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer p.Close()
-
-	ln, err := net.Listen("tcp", "localhost:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ln.Close()
-
-	var client net.Conn
-	var dialerr error
-
-	dialdone := make(chan struct{})
-
-	go func() {
-		client, dialerr = net.Dial(ln.Addr().Network(), ln.Addr().String())
-		close(dialdone)
-	}()
-
-	server, err := ln.Accept()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer server.Close()
-
-	<-dialdone
-	if dialerr != nil {
-		t.Fatal(dialerr)
-	}
-	defer client.Close()
+	p, client, server, cleanup := newSpliceTest(t)
+	defer cleanup()
 
 	msg := "hello world"
 
@@ -281,7 +374,7 @@ func TestWriteTo(t *testing.T) {
 		p.CloseWrite()
 	}()
 
-	_, err = io.Copy(server, p)
+	_, err := io.Copy(server, p)
 	<-clientdone
 	<-pwdone
 
@@ -296,9 +389,28 @@ func TestWriteTo(t *testing.T) {
 	}
 }
 
+func newSpliceTest(t *testing.T) (*zerocopy.Pipe, net.Conn, net.Conn, func()) {
+	t.Helper()
+	p, err := zerocopy.NewPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, server, err := transferTestSocketPair("tcp")
+	if err != nil {
+		p.Close()
+		t.Fatal(err)
+	}
+	cleanup := func() {
+		p.Close()
+		client.Close()
+		server.Close()
+	}
+	return p, client, server, cleanup
+}
+
 // TODO(acln): add test cases where we transfer to and from pipes
 
-// TODO(acln): add test cases for ReadFrom and WriteTo with more combinations of
+// TODO(acln): add test cases for WriteTo with more combinations of
 // blocking source and destination file descriptors.
 
 func TestTransfer(t *testing.T) {

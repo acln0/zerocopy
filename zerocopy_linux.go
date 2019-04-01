@@ -349,9 +349,7 @@ again:
 				return true
 			}
 			if operr == unix.EAGAIN {
-				if !readready {
-					waitread = true
-				}
+				waitread = !readready
 				return true
 			}
 			if operr == nil {
@@ -383,7 +381,6 @@ again:
 		}
 		goto end
 	}
-
 	// If we're here, we have not spliced yet on this round, and we're
 	// waiting for the pipe to be ready.
 	wrcerr = p.wrc.Write(func(pwfd uintptr) bool {
@@ -396,6 +393,7 @@ again:
 			}
 			if operr == unix.EAGAIN {
 				if writeready {
+					waitwrite = false
 					waitreadagain = true
 				} else {
 					waitwrite = true
