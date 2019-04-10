@@ -59,7 +59,7 @@ TCP, or a streaming UNIX domain socket. Implementing this proxy server
 is straightforward:
 
 
-```
+```go
 func proxy(upstream, downstream net.Conn) error {
 	go zerocopy.Transfer(upstream, downstream)
 	go zerocopy.Transfer(downstream, upstream)
@@ -91,7 +91,7 @@ Consider now a slightly more complex data flow diagram.
 
 This server component could be implemented as follows:
 
-```
+```go
 func server(camera net.Conn, recording *os.File, client net.Conn) error {
 	// Create a pipe between the camera and the client.
 	campipe, err := zerocopy.NewPipe()
