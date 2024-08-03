@@ -580,6 +580,7 @@ func transfer(dst io.Writer, src io.Reader) (int64, error) {
 	if err != nil {
 		return io.Copy(dst, src)
 	}
+	defer p.Close()
 
 	var moved int64 = 0
 	if lr != nil {
